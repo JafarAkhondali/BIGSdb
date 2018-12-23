@@ -38,8 +38,8 @@ sub get_attributes {
 		email       => 'keith.jolley@zoo.ox.ac.uk',
 		description => 'Breakdown of query results by field',
 		category    => 'Breakdown',
-		buttontext  => 'Fields',
-		menutext    => 'Single field',
+		buttontext  => 'Fields2',
+		menutext    => 'Single field (2)',
 		module      => 'FieldBreakdown2',
 		version     => '2.0.0',
 		dbtype      => 'isolates',
@@ -80,66 +80,92 @@ sub run {
 		$self->_ajax( $q->param('field') );
 		return;
 	}
-	my $fields = $self->_get_fields;
+	my ( $fields, $labels ) = $self->_get_fields;
 	say q(<h1>Field breakdown of dataset</h1>);
 	say q(<div class="box" id="resultspanel">);
 	my $record_count = BIGSdb::Utils::commify( $self->_get_id_count );
 	say qq(<p><b>Isolate records:</b> $record_count</p>);
 	say q(<label for="field">Select field:</label>);
-	say $q->popup_menu(- name => 'field', id => 'field', values => $fields );
+	say $q->popup_menu( - name => 'field', id => 'field', values => $fields, labels => $labels );
 	say q(<div class="scrollable"><div id="pie_chart"></div></div>);
+	say q(<div id="error"></div>);
 	say q(</div>);
 	return;
 }
 
 sub _get_fields {
-	my ($self) = @_;
-	my $fields = $self->{'xmlHandler'}->get_field_list;
-	my $no_show = $self->_get_no_show_fields;
-	my $values = [];
-	foreach my $field (@$fields){
+	my ($self)        = @_;
+	my $set_id        = $self->get_set_id;
+	my $metadata_list = $self->{'datastore'}->get_set_metadata($set_id);
+	my $field_list    = $self->{'xmlHandler'}->get_field_list($metadata_list);
+	my $expanded_list = [];
+	my $labels        = {};
+	my $no_show       = $self->_get_no_show_fields;
+	my $extended      = $self->get_extended_attributes;
+	foreach my $field (@$field_list) {
 		next if $no_show->{$field};
-		push @$values,$field;
+		push @$expanded_list, $field;
+		if ( ref $extended->{$field} eq 'ARRAY' ) {
+			foreach my $attribute ( @{ $extended->{$field} } ) {
+				push @$expanded_list, "${field}..$attribute";
+				$labels->{"${field}..$attribute"} = $attribute;
+			}
+		}
 	}
-	return $values;
+	return ( $expanded_list, $labels );
 }
 
 sub _get_no_show_fields {
 	my ($self) = @_;
-		  my %no_show = map { $_ => 1 } split /,/x, ( $self->{'system'}->{'noshow'} // q() );
-	  $no_show{'id'} = 1;
-	  $no_show{ $self->{'system'}->{'labelfield'} } = 1;
-	  return \%no_show;
+	my %no_show = map { $_ => 1 } split /,/x, ( $self->{'system'}->{'noshow'} // q() );
+	$no_show{'id'} = 1;
+	$no_show{ $self->{'system'}->{'labelfield'} } = 1;
+	return \%no_show;
 }
 
 sub _get_id_count {
-	  my ($self) = @_;
-	  return $self->{'datastore'}->run_query('SELECT COUNT(*) FROM id_list');
+	my ($self) = @_;
+	return $self->{'datastore'}->run_query('SELECT COUNT(*) FROM id_list');
 }
 
 sub _get_first_field {
-	  my ($self) = @_;
-	  my $fields = $self->{'xmlHandler'}->get_field_list;
-	  my $no_show = $self->_get_no_show_fields;
-	  foreach my $field (@$fields) {
-		  next if $no_show->{$field};
-		  return $field;
-	  }
-	  return;
+	my ($self)  = @_;
+	my $fields  = $self->{'xmlHandler'}->get_field_list;
+	my $no_show = $self->_get_no_show_fields;
+	foreach my $field (@$fields) {
+		next if $no_show->{$field};
+		return $field;
+	}
+	return;
+}
+
+sub _get_query_params {
+	my ($self) = @_;
+	my $q      = $self->{'cgi'};
+	my $params = [];
+	foreach my $param (qw(query_file list_file datatype)) {
+		push @$params, qq($param=) . $q->param($param) if $q->param($param);
+	}
+	return $params;
 }
 
 sub get_plugin_javascript {
-	  my ($self) = @_;
-	  my $field = $self->_get_first_field;
-	  my $url =
-		"$self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&name=FieldBreakdown2&field=$field";
-	  my $buffer = <<"JS";
+	my ($self)       = @_;
+	my $field        = $self->_get_first_field;
+	my $query_params = $self->_get_query_params;
+	local $" = q(&);
+	my $url = qq($self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&)
+	  . qq(name=FieldBreakdown2&field=$field);
+	my $param_string = @$query_params ? qq(&@$query_params) : q();
+	$url .= $param_string;
+	my $buffer = <<"JS";
 var pie = null;
 \$(function () {		
 	load_pie("$url","$field");
 	\$('#field').on("change",function(){
 		var field = \$('#field').val();
-		var url = "$self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&name=FieldBreakdown2&field=" + field;
+		var url = "$self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&name=FieldBreakdown2&field=" 
+		+ field + "$param_string";
 		var panel_height = \$("#resultspanel").height();
 		if (pie !== null) {
 			pie.destroy();
@@ -156,7 +182,7 @@ function get_size() {
 	var width;
 	var height;
 	if (canvas.scrollWidth < 800) {
-		width = canvas.scrollWidth;
+		width = canvas.scrollWidth - 25;
 		height = parseInt(canvas.scrollWidth *  0.8);
 		outerRadius = "60%";
 	} else {
@@ -170,6 +196,7 @@ function get_size() {
 function load_pie(url,field) {
 	var data = [];
 	var size = get_size();
+	var title = field.replace(/^.+\\.\\./, "");
 	d3.json(url).then (function(json) {
 		\$.each(json, function(d,i){
 		    data.push({
@@ -180,11 +207,10 @@ function load_pie(url,field) {
   		})
   		var value_count = data.length;
   		var plural = value_count == 1 ? "" : "s";
- 
  		pie = new d3pie("pie_chart", {
 			header: {
 				title: {
-					text: field
+					text: title
 				},
 				subtitle: {
 					text: value_count + " value" + plural
@@ -224,7 +250,10 @@ function load_pie(url,field) {
 			 	string: "{label}: {value} ({percentage}%)"
 			 }
 		});
-	});
+	},
+	function(error){
+ 		\$("div#error").html('<p style="margin-top:2em"><span class="error_message">No data retrieved!</span></p>');
+ 	});
 	\$(window).resize(function() {
     	var size = get_size();
     	pie.updateProp("size.canvasHeight",size.height);
@@ -233,45 +262,67 @@ function load_pie(url,field) {
  	});
 }
 JS
-	  return $buffer;
+	return $buffer;
 }
 
 sub _ajax {
-	  my ( $self, $field ) = @_;
-	  if ( $self->{'xmlHandler'}->is_field($field) ) {
-		  my $freqs = $self->_get_field_freqs($field);
-		  foreach my $value (@$freqs){
-		  	$value->{'label'} = 'No value' if !defined $value->{'label'};
-		  }
-		  say to_json($freqs);
-	  }
-	  return;
+	my ( $self, $field ) = @_;
+	if ( $self->{'xmlHandler'}->is_field($field) ) {
+		my $freqs = $self->_get_field_freqs($field);
+		foreach my $value (@$freqs) {
+			$value->{'label'} = 'No value' if !defined $value->{'label'};
+		}
+		say to_json($freqs);
+		return;
+	}
+	$logger->error($field);
+	if ( $field =~ /^(.+)\.\.(.+)$/x ) {
+		my ( $std_field, $extended ) = ( $1, $2 );
+		my $freqs = $self->_get_extended_field_freqs( $std_field, $extended );
+		foreach my $value (@$freqs) {
+			$value->{'label'} = 'No value' if !defined $value->{'label'};
+		}
+		say to_json($freqs);
+		return;
+	}
+	return;
 }
 
 sub _get_field_freqs {
-	  my ( $self, $field ) = @_;
-	  my $values = $self->{'datastore'}->run_query(
-		  "SELECT $field AS label,COUNT(*) AS value FROM $self->{'system'}->{'view'} v "
-			. 'JOIN id_list i ON v.id=i.value GROUP BY label',
-		  undef,
-		  { fetch => 'all_arrayref', slice => {} }
-	  );
-	  return $values;
+	my ( $self, $field ) = @_;
+	my $values = $self->{'datastore'}->run_query(
+		"SELECT $field AS label,COUNT(*) AS value FROM $self->{'system'}->{'view'} v "
+		  . 'JOIN id_list i ON v.id=i.value GROUP BY label',
+		undef,
+		{ fetch => 'all_arrayref', slice => {} }
+	);
+	return $values;
+}
+
+sub _get_extended_field_freqs {
+	my ( $self, $field, $extended ) = @_;
+	my $values = $self->{'datastore'}->run_query(
+		"SELECT e.value AS label,COUNT(*) AS value FROM $self->{'system'}->{'view'} v "
+		  . "JOIN isolate_value_extended_attributes e ON v.$field=e.field_value JOIN id_list i ON v.id=i.value "
+		  . 'WHERE (e.isolate_field,e.attribute)=(?,?) GROUP BY label',
+		[ $field, $extended ],
+		{ fetch => 'all_arrayref', slice => {} }
+	);
+	return $values;
 }
 
 sub _create_id_table {
-	  my ($self)     = @_;
-	  my $q          = $self->{'cgi'};
-	  my $query_file = $q->param('query_file');
-	  my $ids        = [];
-	  if ($query_file) {
-		  $ids = $self->get_id_list( 'id', $query_file );
-	  } else {
-		  $ids =
-			$self->{'datastore'}->run_query( "SELECT id FROM $self->{'system'}->{'view'} WHERE new_version IS NULL",
-			  undef, { fetch => 'col_arrayref' } );
-	  }
-	  $self->{'datastore'}->create_temp_list_table_from_array( 'int', $ids, { table => 'id_list' } );
-	  return;
+	my ($self)     = @_;
+	my $q          = $self->{'cgi'};
+	my $query_file = $q->param('query_file');
+	my $ids        = [];
+	if ($query_file) {
+		$ids = $self->get_id_list( 'id', $query_file );
+	} else {
+		$ids = $self->{'datastore'}->run_query( "SELECT id FROM $self->{'system'}->{'view'} WHERE new_version IS NULL",
+			undef, { fetch => 'col_arrayref' } );
+	}
+	$self->{'datastore'}->create_temp_list_table_from_array( 'int', $ids, { table => 'id_list' } );
+	return;
 }
 1;
