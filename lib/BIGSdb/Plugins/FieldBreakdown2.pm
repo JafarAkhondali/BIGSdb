@@ -38,7 +38,7 @@ sub get_attributes {
 		email       => 'keith.jolley@zoo.ox.ac.uk',
 		description => 'Breakdown of query results by field',
 		category    => 'Breakdown',
-		buttontext  => 'Fields',
+		buttontext  => 'Fields2',
 		menutext    => 'Single field',
 		module      => 'FieldBreakdown2',
 		version     => '2.0.0',
@@ -50,7 +50,7 @@ sub get_attributes {
 		#		requires      => 'chartdirector',
 		#		text_filename => "$field\_breakdown.txt",
 		#		xlsx_filename => "$field\_breakdown.xlsx",
-		order => 11
+		order => 12
 	);
 	return \%att;
 }
@@ -58,7 +58,7 @@ sub get_attributes {
 sub get_initiation_values {
 	my ($self) = @_;
 	my $q = $self->{'cgi'};
-	my $values = { d3 => 1, noCache => 1 };
+	my $values = { plotly => 1, noCache => 1 };
 	if ( $q->param('field') ) {
 		$values->{'type'} = 'json';
 	}
@@ -80,198 +80,221 @@ sub run {
 		$self->_ajax( $q->param('field') );
 		return;
 	}
-	my $fields = $self->_get_fields;
+	my ($fields,$labels) = $self->_get_fields;
 	say q(<h1>Field breakdown of dataset</h1>);
 	say q(<div class="box" id="resultspanel">);
 	my $record_count = BIGSdb::Utils::commify( $self->_get_id_count );
 	say qq(<p><b>Isolate records:</b> $record_count</p>);
 	say q(<label for="field">Select field:</label>);
-	say $q->popup_menu(- name => 'field', id => 'field', values => $fields );
-	say q(<div class="scrollable"><div id="pie_chart"></div></div>);
+	say $q->popup_menu( - name => 'field', id => 'field', values => $fields, labels => $labels );
+	say q(<div class="scrollable"><div id="chart" style="min-width:420px"></div></div>);
+	say q(<div id="error" style="padding-bottom:4em"></div>);
 	say q(</div>);
 	return;
 }
 
 sub _get_fields {
-	my ($self) = @_;
-	my $fields = $self->{'xmlHandler'}->get_field_list;
+	my ($self)        = @_;
+	my $set_id        = $self->get_set_id;
+	my $metadata_list = $self->{'datastore'}->get_set_metadata($set_id);
+	my $field_list    = $self->{'xmlHandler'}->get_field_list($metadata_list);
+	my $expanded_list = [];
+	my $labels = {};
 	my $no_show = $self->_get_no_show_fields;
-	my $values = [];
-	foreach my $field (@$fields){
+	my $extended = $self->get_extended_attributes;
+	foreach my $field (@$field_list) {
 		next if $no_show->{$field};
-		push @$values,$field;
+		push @$expanded_list, $field;
+		if ( ref $extended->{$field} eq 'ARRAY' ) {
+			foreach my $attribute ( @{ $extended->{$field} } ) {
+				push @$expanded_list, "${field}..$attribute";
+				$labels->{"${field}..$attribute"} = $attribute;
+			}
+		}
 	}
-	return $values;
+	return ($expanded_list, $labels);
 }
 
 sub _get_no_show_fields {
 	my ($self) = @_;
-		  my %no_show = map { $_ => 1 } split /,/x, ( $self->{'system'}->{'noshow'} // q() );
-	  $no_show{'id'} = 1;
-	  $no_show{ $self->{'system'}->{'labelfield'} } = 1;
-	  return \%no_show;
+	my %no_show = map { $_ => 1 } split /,/x, ( $self->{'system'}->{'noshow'} // q() );
+	$no_show{'id'} = 1;
+	$no_show{ $self->{'system'}->{'labelfield'} } = 1;
+	return \%no_show;
 }
 
 sub _get_id_count {
-	  my ($self) = @_;
-	  return $self->{'datastore'}->run_query('SELECT COUNT(*) FROM id_list');
+	my ($self) = @_;
+	return $self->{'datastore'}->run_query('SELECT COUNT(*) FROM id_list');
 }
 
 sub _get_first_field {
-	  my ($self) = @_;
-	  my $fields = $self->{'xmlHandler'}->get_field_list;
-	  my $no_show = $self->_get_no_show_fields;
-	  foreach my $field (@$fields) {
-		  next if $no_show->{$field};
-		  return $field;
-	  }
-	  return;
+	my ($self)  = @_;
+	my $fields  = $self->{'xmlHandler'}->get_field_list;
+	my $no_show = $self->_get_no_show_fields;
+	foreach my $field (@$fields) {
+		next if $no_show->{$field};
+		return $field;
+	}
+	return;
+}
+
+sub _get_query_params {
+	my ($self) = @_;
+	my $q      = $self->{'cgi'};
+	my $params = [];
+	foreach my $param (qw(query_file list_file datatype)) {
+		push @$params, qq($param=) . $q->param($param) if $q->param($param);
+	}
+	return $params;
 }
 
 sub get_plugin_javascript {
-	  my ($self) = @_;
-	  my $field = $self->_get_first_field;
-	  my $url =
-		"$self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&name=FieldBreakdown2&field=$field";
-	  my $buffer = <<"JS";
-var pie = null;
+	my ($self)       = @_;
+	my $field        = $self->_get_first_field;
+	my $query_params = $self->_get_query_params;
+	local $" = q(&);
+	my $url = qq($self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&)
+	  . qq(name=FieldBreakdown2&field=$field);
+	my $param_string = @$query_params ? qq(&@$query_params) : q();
+	$url .= $param_string;
+	my $buffer = <<"JS";
 \$(function () {		
 	load_pie("$url","$field");
 	\$('#field').on("change",function(){
 		var field = \$('#field').val();
-		var url = "$self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&name=FieldBreakdown2&field=" + field;
+		var url = "$self->{'system'}->{'script_name'}?db=$self->{'instance'}&page=plugin&name=FieldBreakdown2&field=" 
+		+ field + "$param_string";
 		var panel_height = \$("#resultspanel").height();
-		if (pie !== null) {
-			pie.destroy();
-			\$("#resultspanel").css("height",panel_height);
-			pie = null;			
-		}
-		load_pie(url,field);
+		\$("#resultspanel").css("height",panel_height);
+		load_pie(url, field);
     });
+    \$(window).resize(function() {
+    	var size = get_size();
+ 		Plotly.relayout('chart',{height:size.height,width:size.width});
+ 	});
 });
 
 function get_size() {
 	var canvas = document.getElementById('resultspanel');
-	var outerRadius;
 	var width;
 	var height;
 	if (canvas.scrollWidth < 800) {
-		width = canvas.scrollWidth;
-		height = parseInt(canvas.scrollWidth *  0.8);
-		outerRadius = "60%";
+		width = canvas.scrollWidth - 25;
+		height = parseInt(canvas.scrollWidth *  0.9);
 	} else {
 		width = 800;
-		height = 600;
-		outerRadius = "95%";
+		height = 700;
 	}
-	return {width: width, height: height, outerRadius: outerRadius};
+	return {width: width, height: height};
 }
 
 function load_pie(url,field) {
-	var data = [];
-	var size = get_size();
-	d3.json(url).then (function(json) {
+	var values = [];
+	var labels = [];
+	var display = [];
+	var total = 0;
+	var title = field.replace(/^.+\\.\\./, "");
+	Plotly.d3.json(url, function(err, json) {
+		if (err){
+			\$("div#error").html('<p style="margin-top:2em"><span class="error_message">No data retrieved!</span></p>');
+			return;
+		}
 		\$.each(json, function(d,i){
-		    data.push({
-		    	label: i.label,
-				value: i.value
-
-    		})
+		    values.push(i.value);
+		    labels.push(i.label);
+		    total += i.value;
   		})
-  		var value_count = data.length;
+  		var min_to_display = parseInt(0.02 * total);
+   		\$.each(json, function(d,i){
+  			display.push(i.value >= min_to_display ? 'outside' : 'none');
+  		})
+  		var data = [{
+  			values: values,
+  			labels: labels,
+  			textposition: display,
+  			type: 'pie',
+  			opacity: 0.8,
+  			textinfo: 'label',
+  			rotation: 60,
+   		}];
+   		var value_count = values.length;
   		var plural = value_count == 1 ? "" : "s";
- 
- 		pie = new d3pie("pie_chart", {
-			header: {
-				title: {
-					text: field
-				},
-				subtitle: {
-					text: value_count + " value" + plural
-				}
-			},
-			size: {
-				pieOuterRadius: size.outerRadius,
-				canvasHeight: size.height,
-				canvasWidth: size.width
-			},
-			labels: {
-				inner: {
-					hideWhenLessThanPercentage: 3
-				},
-				mainLabel: {
-					fontSize: 12
-				}
-			},
-			data: {
-			    content: data,
-			    smallSegmentGrouping: {
-					enabled: true,
-					value: 1,
-					valueType: "percentage",
-					label: "Others"
-				},
-				sortOrder: "value-desc"
-			 },
-			 misc: {
-			 	gradient: {
-			 		enabled: true
-			 	}
-			 },
-			 tooltips: {
-			 	enabled: true,
-			 	type: "placeholder",
-			 	string: "{label}: {value} ({percentage}%)"
-			 }
-		});
+ 		title += " (" + value_count + " value" + plural + ")";
+ 		var size = get_size();
+		var layout = {
+			showlegend: false,
+ 			title: title,
+  			font: {size: 14},
+  			paper_bgcolor: 'rgba(0,0,0,0)',
+  			plot_bgcolor: 'rgba(0,0,0,0)',
+  			width: size.width,
+  			height: size.height,
+ 		};
+		Plotly.newPlot('chart', data, layout,{displayModeBar:false});
 	});
-	\$(window).resize(function() {
-    	var size = get_size();
-    	pie.updateProp("size.canvasHeight",size.height);
-    	pie.updateProp("size.canvasWidth",size.width);
-    	pie.updateProp("size.pieOuterRadius",size.outerRadius);
- 	});
 }
 JS
-	  return $buffer;
+	return $buffer;
 }
 
 sub _ajax {
-	  my ( $self, $field ) = @_;
-	  if ( $self->{'xmlHandler'}->is_field($field) ) {
-		  my $freqs = $self->_get_field_freqs($field);
-		  foreach my $value (@$freqs){
-		  	$value->{'label'} = 'No value' if !defined $value->{'label'};
-		  }
-		  say to_json($freqs);
-	  }
-	  return;
+	my ( $self, $field ) = @_;
+	if ( $self->{'xmlHandler'}->is_field($field) ) {
+		my $freqs = $self->_get_field_freqs($field);
+		foreach my $value (@$freqs) {
+			$value->{'label'} = 'No value' if !defined $value->{'label'};
+		}
+		say to_json($freqs);
+		return;
+	}
+	if ($field =~ /^(.+)\.\.(.+)$/x){
+		my ($std_field, $extended) = ($1, $2);
+		my $freqs = $self->_get_extended_field_freqs($std_field, $extended);
+		foreach my $value (@$freqs) {
+			$value->{'label'} = 'No value' if !defined $value->{'label'};
+		}
+		say to_json($freqs);
+		return;
+	}
+	return;
 }
 
 sub _get_field_freqs {
-	  my ( $self, $field ) = @_;
-	  my $values = $self->{'datastore'}->run_query(
-		  "SELECT $field AS label,COUNT(*) AS value FROM $self->{'system'}->{'view'} v "
-			. 'JOIN id_list i ON v.id=i.value GROUP BY label',
-		  undef,
-		  { fetch => 'all_arrayref', slice => {} }
-	  );
-	  return $values;
+	my ( $self, $field ) = @_;
+	my $values = $self->{'datastore'}->run_query(
+		"SELECT $field AS label,COUNT(*) AS value FROM $self->{'system'}->{'view'} v "
+		  . 'JOIN id_list i ON v.id=i.value GROUP BY label',
+		undef,
+		{ fetch => 'all_arrayref', slice => {} }
+	);
+	return $values;
+}
+
+sub _get_extended_field_freqs {
+	my ( $self, $field, $extended ) = @_;
+	my $values = $self->{'datastore'}->run_query(
+		"SELECT e.value AS label,COUNT(*) AS value FROM $self->{'system'}->{'view'} v "
+		  . "JOIN isolate_value_extended_attributes e ON v.$field=e.field_value JOIN id_list i ON v.id=i.value "
+		  . 'WHERE (e.isolate_field,e.attribute)=(?,?) GROUP BY label',
+		[ $field, $extended],
+		{ fetch => 'all_arrayref', slice => {} }
+	);
+	return $values;
 }
 
 sub _create_id_table {
-	  my ($self)     = @_;
-	  my $q          = $self->{'cgi'};
-	  my $query_file = $q->param('query_file');
-	  my $ids        = [];
-	  if ($query_file) {
-		  $ids = $self->get_id_list( 'id', $query_file );
-	  } else {
-		  $ids =
-			$self->{'datastore'}->run_query( "SELECT id FROM $self->{'system'}->{'view'} WHERE new_version IS NULL",
-			  undef, { fetch => 'col_arrayref' } );
-	  }
-	  $self->{'datastore'}->create_temp_list_table_from_array( 'int', $ids, { table => 'id_list' } );
-	  return;
+	my ($self)     = @_;
+	my $q          = $self->{'cgi'};
+	my $query_file = $q->param('query_file');
+	my $ids        = [];
+	if ($query_file) {
+		$ids = $self->get_id_list( 'id', $query_file );
+	} else {
+		$ids = $self->{'datastore'}->run_query( "SELECT id FROM $self->{'system'}->{'view'} WHERE new_version IS NULL",
+			undef, { fetch => 'col_arrayref' } );
+	}
+	$self->{'datastore'}->create_temp_list_table_from_array( 'int', $ids, { table => 'id_list' } );
+	return;
 }
 1;

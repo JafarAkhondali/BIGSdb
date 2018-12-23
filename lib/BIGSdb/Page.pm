@@ -147,7 +147,7 @@ sub _get_javascript_paths {
 			'CryptoJS.MD5'        => [qw(md5.js)],
 			'packery'             => [qw(packery.js)],
 			'dropzone'            => [qw(dropzone.js)],
-			'd3'                  => [qw(d3.v5.min.js d3pie.min.js)],
+			'plotly'              => [qw(plotly-latest.min.js)]
 		);
 		foreach my $feature ( keys %js ) {
 			next if !$self->{$feature};
@@ -318,7 +318,7 @@ sub _initiate_plugin {
 				$self->{'attachment'} = $att->{'tar_filename'};
 			},
 			json => sub {
-				$self->{'type'}       = 'json';
+				$self->{'type'} = 'json';
 			}
 		};
 		if ( $formats->{ $q->param('format') } ) {
@@ -406,8 +406,8 @@ sub print_page_content {
 		  ( embl => 'sequence' . ( $q->param('seqbin_id') // $q->param('isolate_id') // q() ) . '.embl', );
 		$header_options{'-type'} = $mime_type{ $self->{'type'} } // 'text/plain';
 		$header_options{'-attachment'} = $attachment{ $self->{'type'} } // $self->{'attachment'} // undef;
-		my %utf8_types = map {$_ => 1} qw(no_header text json);
-		binmode STDOUT, ':encoding(utf8)' if $utf8_types{$self->{'type'}} ;
+		my %utf8_types = map { $_ => 1 } qw(no_header text json);
+		binmode STDOUT, ':encoding(utf8)' if $utf8_types{ $self->{'type'} };
 		print $q->header( \%header_options );
 		$self->print_content;
 	} else {
@@ -494,7 +494,7 @@ sub get_stylesheets {
 	my ($self) = @_;
 	my $stylesheet;
 	my $system  = $self->{'system'};
-	my $version = '20181215';
+	my $version = '20181223';
 	my @filenames;
 	push @filenames, q(dropzone.css) if $self->{'dropzone'};
 	push @filenames, qw(jquery-ui.css fontawesome-all.css bigsdb.css);
